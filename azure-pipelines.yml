@@ -1,0 +1,71 @@
+trigger:
+  batch: true
+  branches:
+    include:
+      - ppe
+      - prod
+  paths:
+    include:
+      - workspace/*
+
+pool:
+  name: 'Default'
+
+stages:
+- stage: FabricCICD_Deployment
+  displayName: 'Deploy'
+  jobs:
+  - job: Deploy
+    displayName: 'Deploy Changed Workspaces'
+    steps:
+    - checkout: self
+      displayName: 'Checkout Repository'
+      persistCredentials: true
+      fetchDepth: 0  # Required for HEAD~1 diff to work
+
+    - task: PowerShell@2
+      displayName: 'Install Fabric-CICD'
+      inputs:
+        targetType: 'inline'
+        script: |
+          python -m pip install fabric-cicd --upgrade
+
+    - task: PowerShell@2
+      displayName: 'Detect Changed Workspaces and Run Matching Scripts'
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        CLIENT_ID: $(CLIENT_ID)
+        CLIENT_SECRET: $(CLIENT_SECRET)
+        TENANT_ID: $(TENANT_ID)
+      inputs:
+        targetType: 'inline'
+        script: |
+          git fetch origin
+          $targetBranch = "${env:BUILD_SOURCEBRANCHNAME}"
+          Write-Host "##[section]Detected branch: $targetBranch"
+
+          $diffFiles = git diff --name-only HEAD~1 HEAD
+          Write-Host "##[section]🔍 Files changed in last commit:"
+          $diffFiles | ForEach-Object { Write-Host " - $_" }
+
+          $changedFolders = $diffFiles | Where-Object { $_ -like 'workspace/*' } | ForEach-Object {
+              ($_ -split '/')[1]
+          } | Sort-Object -Unique
+
+          Write-Host "##[section]📁 Changed workspace folders:"
+          $changedFolders | ForEach-Object { Write-Host " - $_" }
+
+          if (-not $changedFolders) {
+              Write-Host "##[section]No workspace changes detected. Skipping deployment."
+              exit 0
+          }
+
+          foreach ($folder in $changedFolders) {
+              $scriptPath = ".deploy/$folder.py"
+              if (Test-Path $scriptPath) {
+                  Write-Host "##[section]🔁 Deploying '$folder' with '$scriptPath'"
+                  python $scriptPath
+              } else {
+                  Write-Host "##[warning]⚠️ No script found for workspace '$folder'. Skipping."
+              }
+          }
